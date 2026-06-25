@@ -27,8 +27,10 @@ param(
     [switch]$Force
 )
 
-Set-StrictMode -Version Latest
+Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
+
+$ScriptVersion = '1.1.0'
 
 $InstanceIdPattern = '[a-f0-9]{16}'
 $HashFolderPattern = "^$InstanceIdPattern$"
@@ -48,6 +50,28 @@ function Write-Result {
     }
 
     Write-Output $line
+}
+
+function Ensure-StringArray {
+    param([AllowNull()][object]$InputObject)
+
+    if ($null -eq $InputObject) {
+        return [string[]]@()
+    }
+
+    if ($InputObject -is [string]) {
+        return [string[]]@($InputObject)
+    }
+
+    $values = @(
+        foreach ($item in @($InputObject)) {
+            if ($null -ne $item) {
+                [string]$item
+            }
+        }
+    )
+
+    return [string[]]$values
 }
 
 function Get-ActiveScreenConnectInstanceId {
@@ -114,11 +138,12 @@ function Get-TempScanRoots {
 }
 
 function Get-InstanceFolderCandidates {
-    param([string[]]$ScanRoots)
+    param([AllowNull()][object]$ScanRoots)
 
+    $roots = Ensure-StringArray -InputObject $ScanRoots
     $candidates = [System.Collections.Generic.List[System.IO.DirectoryInfo]]::new()
 
-    foreach ($root in $ScanRoots) {
+    foreach ($root in $roots) {
         $screenConnectRoot = Join-Path $root 'ScreenConnect'
         if (Test-Path -LiteralPath $screenConnectRoot) {
             Get-ChildItem -LiteralPath $screenConnectRoot -Recurse -Directory -Force -ErrorAction SilentlyContinue |
@@ -183,10 +208,10 @@ function Test-IsScreenConnectInstallerFile {
 function Test-IsUnderActiveInstance {
     param(
         [string]$Path,
-        [string[]]$ActiveInstanceIds
+        [AllowNull()][object]$ActiveInstanceIds
     )
 
-    foreach ($instanceId in $ActiveInstanceIds) {
+    foreach ($instanceId in (Ensure-StringArray -InputObject $ActiveInstanceIds)) {
         if ($Path -match ('\\{0}(\\|$)' -f [regex]::Escape($instanceId))) {
             return $true
         }
@@ -215,7 +240,7 @@ function Test-FolderTooNew {
 function Test-InstallerInProgress {
     param(
         [System.IO.FileInfo]$File,
-        [string[]]$ActiveInstanceIds,
+        [AllowNull()][object]$ActiveInstanceIds,
         [datetime]$Cutoff
     )
 
@@ -224,7 +249,7 @@ function Test-InstallerInProgress {
     }
 
     $parentPath = $File.DirectoryName
-    foreach ($instanceId in $ActiveInstanceIds) {
+    foreach ($instanceId in (Ensure-StringArray -InputObject $ActiveInstanceIds)) {
         if ($parentPath -match ('\\{0}(\\|$)' -f [regex]::Escape($instanceId)) -and $File.LastWriteTime -gt $Cutoff) {
             return $true
         }
@@ -258,16 +283,17 @@ function Remove-EmptyScreenConnectAncestors {
 function Invoke-FolderAction {
     param(
         [System.IO.DirectoryInfo]$Directory,
-        [string[]]$ActiveInstanceIds,
+        [AllowNull()][object]$ActiveInstanceIds,
         [datetime]$Cutoff,
         [ref]$Stats,
         [System.Collections.Generic.HashSet[string]]$RemovedPaths
     )
 
+    $activeIds = Ensure-StringArray -InputObject $ActiveInstanceIds
     $instanceId = Get-FolderInstanceId -FolderName $Directory.Name
     $path = $Directory.FullName
 
-    if ($instanceId -and ($ActiveInstanceIds -contains $instanceId)) {
+    if ($instanceId -and ($activeIds -contains $instanceId)) {
         Write-Result -Type 'Folder' -Status 'SKIPPED (active)' -Path $path
         $Stats.Value.SkippedFolders++
         return
@@ -301,11 +327,13 @@ function Invoke-FolderAction {
 function Invoke-InstallerAction {
     param(
         [System.IO.FileInfo]$File,
-        [string[]]$ActiveInstanceIds,
+        [AllowNull()][object]$ActiveInstanceIds,
         [datetime]$Cutoff,
         [ref]$Stats,
         [System.Collections.Generic.HashSet[string]]$RemovedPaths
     )
+
+    $activeIds = Ensure-StringArray -InputObject $ActiveInstanceIds
 
     $path = $File.FullName
     $parentPath = $File.DirectoryName
@@ -314,7 +342,7 @@ function Invoke-InstallerAction {
         return
     }
 
-    if (Test-IsUnderActiveInstance -Path $path -ActiveInstanceIds $ActiveInstanceIds) {
+    if (Test-IsUnderActiveInstance -Path $path -ActiveInstanceIds $activeIds) {
         Write-Result -Type 'Installer' -Status 'SKIPPED (active)' -Path $path
         $Stats.Value.SkippedInstallers++
         return
@@ -327,7 +355,7 @@ function Invoke-InstallerAction {
         return
     }
 
-    if (Test-InstallerInProgress -File $File -ActiveInstanceIds $ActiveInstanceIds -Cutoff $Cutoff) {
+    if (Test-InstallerInProgress -File $File -ActiveInstanceIds $activeIds -Cutoff $Cutoff) {
         Write-Result -Type 'Installer' -Status 'SKIPPED (too new)' -Path $path -Detail 'active client reinstall in progress'
         $Stats.Value.SkippedInstallers++
         return
@@ -352,20 +380,20 @@ function Invoke-InstallerAction {
     }
 }
 
-$activeInstanceIds = @(Get-ActiveScreenConnectInstanceId)
-$scanRoots = @(Get-TempScanRoots)
+$activeInstanceIds = Ensure-StringArray (Get-ActiveScreenConnectInstanceId)
+$scanRoots = Ensure-StringArray (Get-TempScanRoots)
 $folderCutoff = (Get-Date).AddHours(-1 * $MinAgeHours)
 $mode = if ($Delete) { 'DELETE' } else { 'DRY-RUN' }
 
-Write-Output "=== ScreenConnect Temp Cleanup ==="
+Write-Output "=== ScreenConnect Temp Cleanup v$ScriptVersion ==="
 Write-Output "Mode: $mode"
-Write-Output "Active instance ID(s): $(if ($activeInstanceIds.Length -gt 0) { ($activeInstanceIds -join ', ') } else { '(none detected)' })"
+Write-Output "Active instance ID(s): $(if ($activeInstanceIds -and $activeInstanceIds.Length -gt 0) { ($activeInstanceIds -join ', ') } else { '(none detected)' })"
 Write-Output "Scan roots: $(($scanRoots -join '; '))"
 Write-Output "Folder min age: $MinAgeHours hour(s)$(if ($Force) { ' (Force: age check disabled)' } else { '' })"
 Write-Output "Installer year cutoff: <= $MaxInstallerYear"
 Write-Output ''
 
-if ($activeInstanceIds.Length -eq 0) {
+if (-not $activeInstanceIds -or $activeInstanceIds.Length -eq 0) {
     Write-Output 'WARNING: No active ScreenConnect client detected. Proceeding with temp-only cleanup.'
     Write-Output ''
 }
