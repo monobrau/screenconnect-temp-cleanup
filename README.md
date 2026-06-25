@@ -18,10 +18,12 @@ PowerShell utility for removing leftover ScreenConnect temp folders and old inst
 
 ## Requirements
 
-- Windows with PowerShell 5.1+
+- **Windows endpoints only** (PowerShell 5.1+)
 - Outbound HTTPS to `raw.githubusercontent.com`
 
-## ScreenConnect command console
+Do **not** run these commands against **macOS or Linux** guests. On those systems, ScreenConnect interprets `#!ps` as the Unix `ps` process tool, not PowerShell, and you will see `ps: illegal argument`.
+
+## ScreenConnect command console (Windows)
 
 The SC command tab runs in `cmd` by default with a 10-second timeout. Use hashbang modifiers so PowerShell runs with enough time and output space.
 
@@ -37,7 +39,7 @@ Use `ScriptBlock` invocation so `-Delete` binds correctly. Add a cache-buster qu
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.0"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.1"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script))
 ```
@@ -50,12 +52,25 @@ $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.0"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.1"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script)) -Delete
 ```
 
-Output should begin with `=== ScreenConnect Temp Cleanup v1.2.0 ===`. If you do not see a version number, the endpoint is still running an old cached script — bump the `?v=` value or retry.
+### Windows fallback (if `#!ps` fails)
+
+Use this on **Windows only** when the hashbang is not routed to PowerShell:
+
+```text
+#!cmd
+#timeout=120000
+#maxlength=100000
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $url = 'https://raw.githubusercontent.com/monobrau/screenconnect-temp-cleanup/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.1'; $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content; & ([ScriptBlock]::Create($script)) -Delete }"
+```
+
+For dry-run, remove `-Delete` from the end of the `-Command` block.
+
+Output should begin with `=== ScreenConnect Temp Cleanup v1.2.1 ===`. If you do not see a version number, the endpoint is still running an old cached script — bump the `?v=` value or retry.
 
 ## Local usage
 
@@ -103,6 +118,7 @@ No changes made. Re-run with -Delete to remove matched items.
 ## Troubleshooting
 
 - **Command times out in SC:** Increase `#timeout=` (milliseconds). Large temp folders may need `#timeout=300000`.
+- **`ps: illegal argument`:** The guest is **macOS** (or non-Windows). This script is Windows-only — run it on Windows endpoints.
 - **Output truncated:** Increase `#maxlength=` or run locally and review full output.
 - **TLS errors:** The SC one-liner sets TLS 1.2 explicitly; ensure the endpoint can reach GitHub.
 - **No active client detected:** The script still runs but logs a warning. Review dry-run output before using `-Delete`.

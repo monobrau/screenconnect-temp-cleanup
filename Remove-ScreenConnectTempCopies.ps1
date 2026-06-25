@@ -30,7 +30,12 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-$ScriptVersion = '1.2.0'
+$ScriptVersion = '1.2.1'
+
+if ($env:OS -notlike '*Windows*' -and -not $IsWindows) {
+    Write-Output "ERROR: This script supports Windows endpoints only."
+    return
+}
 
 $InstanceIdPattern = '[a-f0-9]{16}'
 $HashFolderPattern = "^$InstanceIdPattern$"
