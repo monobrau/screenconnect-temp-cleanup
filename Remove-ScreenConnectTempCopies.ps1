@@ -66,7 +66,8 @@ function Get-ActiveScreenConnectInstanceId {
 
     foreach ($path in $uninstallPaths) {
         Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | ForEach-Object {
-            $displayName = if ($_.PSObject.Properties.Match('DisplayName').Count) { $_.DisplayName } else { $null }
+            $displayNameProperty = $_.PSObject.Properties['DisplayName']
+            $displayName = if ($null -ne $displayNameProperty) { $displayNameProperty.Value } else { $null }
             if ($null -eq $displayName) {
                 return
             }
@@ -77,7 +78,12 @@ function Get-ActiveScreenConnectInstanceId {
         }
     }
 
-    return @($instanceIds)
+    $list = [System.Collections.Generic.List[string]]::new()
+    foreach ($id in $instanceIds) {
+        [void]$list.Add($id)
+    }
+
+    return [string[]]($list.ToArray())
 }
 
 function Get-TempScanRoots {
@@ -99,7 +105,12 @@ function Get-TempScanRoots {
         }
     }
 
-    return @($roots)
+    $list = [System.Collections.Generic.List[string]]::new()
+    foreach ($root in $roots) {
+        [void]$list.Add($root)
+    }
+
+    return [string[]]($list.ToArray())
 }
 
 function Get-InstanceFolderCandidates {
@@ -341,20 +352,20 @@ function Invoke-InstallerAction {
     }
 }
 
-$activeInstanceIds = Get-ActiveScreenConnectInstanceId
-$scanRoots = Get-TempScanRoots
+$activeInstanceIds = @(Get-ActiveScreenConnectInstanceId)
+$scanRoots = @(Get-TempScanRoots)
 $folderCutoff = (Get-Date).AddHours(-1 * $MinAgeHours)
 $mode = if ($Delete) { 'DELETE' } else { 'DRY-RUN' }
 
 Write-Output "=== ScreenConnect Temp Cleanup ==="
 Write-Output "Mode: $mode"
-Write-Output "Active instance ID(s): $(if ($activeInstanceIds.Count) { ($activeInstanceIds -join ', ') } else { '(none detected)' })"
+Write-Output "Active instance ID(s): $(if ($activeInstanceIds.Length -gt 0) { ($activeInstanceIds -join ', ') } else { '(none detected)' })"
 Write-Output "Scan roots: $(($scanRoots -join '; '))"
 Write-Output "Folder min age: $MinAgeHours hour(s)$(if ($Force) { ' (Force: age check disabled)' } else { '' })"
 Write-Output "Installer year cutoff: <= $MaxInstallerYear"
 Write-Output ''
 
-if (-not $activeInstanceIds.Count) {
+if ($activeInstanceIds.Length -eq 0) {
     Write-Output 'WARNING: No active ScreenConnect client detected. Proceeding with temp-only cleanup.'
     Write-Output ''
 }
