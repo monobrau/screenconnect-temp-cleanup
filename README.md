@@ -1,0 +1,107 @@
+# ScreenConnect Temp Cleanup
+
+PowerShell utility for removing leftover ScreenConnect temp folders and old installer files from Windows endpoints. Designed to run from the **ConnectWise Control (ScreenConnect) command console** by pulling the script directly from GitHub.
+
+## What it does
+
+- Scans `%TEMP%` and `%LOCALAPPDATA%\Temp` for stale ScreenConnect instance folders, including nested layouts like `ScreenConnect\{version}\{instance-id}\`
+- Removes ScreenConnect installer files (`.msi`, `.exe`) dated **2025 or older**
+- Preserves the **currently installed** ScreenConnect client instance
+- **Dry-run by default** — reports findings without deleting until `-Delete` is used
+
+## Safety
+
+- Temp folders only — does not touch `Program Files`, `ProgramData`, or registry
+- Skips folders/files belonging to the active ScreenConnect client service
+- Skips temp folders modified within the last 24 hours (configurable)
+- Skips installer files from 2026 onward
+
+## Requirements
+
+- Windows with PowerShell 5.1+
+- Outbound HTTPS to `raw.githubusercontent.com`
+
+## ScreenConnect command console
+
+The SC command tab runs in `cmd` by default with a 10-second timeout. Use hashbang modifiers so PowerShell runs with enough time and output space.
+
+Replace `monobrau/screenconnect-temp-cleanup` if you fork or rename the repository.
+
+### Dry-run (recommended first)
+
+```powershell
+#!ps
+#timeout=120000
+#maxlength=100000
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$repo = 'monobrau/screenconnect-temp-cleanup'
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1"
+Invoke-Expression (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
+```
+
+### Delete matched items
+
+```powershell
+#!ps
+#timeout=120000
+#maxlength=100000
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$repo = 'monobrau/screenconnect-temp-cleanup'
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1"
+$Delete = $true
+Invoke-Expression (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
+```
+
+## Local usage
+
+```powershell
+# Report only
+.\Remove-ScreenConnectTempCopies.ps1
+
+# Delete matched items
+.\Remove-ScreenConnectTempCopies.ps1 -Delete
+
+# Custom options
+.\Remove-ScreenConnectTempCopies.ps1 -Delete -MinAgeHours 48 -MaxInstallerYear 2025
+```
+
+## Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `-Delete` | off | Remove matched folders and installer files |
+| `-MinAgeHours` | `24` | Skip temp folders modified within this many hours |
+| `-MaxInstallerYear` | `2025` | Remove installers with LastWriteTime year <= this value |
+| `-Force` | off | Skip the folder age check |
+
+## Example output
+
+```text
+=== ScreenConnect Temp Cleanup ===
+Mode: DRY-RUN
+Active instance ID(s): d519fd2fdcfe66e7
+Scan roots: C:\Users\user\AppData\Local\Temp
+Folder min age: 24 hour(s)
+Installer year cutoff: <= 2025
+
+[Folder] SKIPPED (active) : C:\Users\user\AppData\Local\Temp\ScreenConnect\d519fd2fdcfe66e7
+[Folder] WOULD REMOVE : C:\Users\user\AppData\Local\Temp\ScreenConnect\abc123def4567890
+[Installer] WOULD REMOVE : C:\Users\user\AppData\Local\Temp\ScreenConnect Client Setup.msi (LastWriteTime 2024-11-03)
+[Installer] SKIPPED (year > cutoff) : C:\Users\user\AppData\Local\Temp\ScreenConnect-2026.msi (LastWriteTime year 2026, cutoff 2025)
+
+=== Summary ===
+Folders would remove: 1; skipped: 1
+Installers would remove: 1; skipped: 1
+No changes made. Re-run with -Delete to remove matched items.
+```
+
+## Troubleshooting
+
+- **Command times out in SC:** Increase `#timeout=` (milliseconds). Large temp folders may need `#timeout=300000`.
+- **Output truncated:** Increase `#maxlength=` or run locally and review full output.
+- **TLS errors:** The SC one-liner sets TLS 1.2 explicitly; ensure the endpoint can reach GitHub.
+- **No active client detected:** The script still runs but logs a warning. Review dry-run output before using `-Delete`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
