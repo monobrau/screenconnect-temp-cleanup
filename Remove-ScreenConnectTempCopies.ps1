@@ -30,7 +30,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-$ScriptVersion = '1.1.0'
+$ScriptVersion = '1.2.0'
 
 $InstanceIdPattern = '[a-f0-9]{16}'
 $HashFolderPattern = "^$InstanceIdPattern$"
@@ -110,23 +110,46 @@ function Get-ActiveScreenConnectInstanceId {
     return [string[]]($list.ToArray())
 }
 
+function Add-TempScanRoot {
+    param(
+        [System.Collections.Generic.HashSet[string]]$Roots,
+        [string]$Candidate
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Candidate)) {
+        return
+    }
+
+    try {
+        $resolved = [System.IO.Path]::GetFullPath($Candidate)
+        if (Test-Path -LiteralPath $resolved) {
+            [void]$Roots.Add($resolved)
+        }
+    }
+    catch {
+        Write-Output "WARNING: Temp path not accessible: $Candidate"
+    }
+}
+
 function Get-TempScanRoots {
     $roots = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 
-    foreach ($candidate in @($env:TEMP, (Join-Path $env:LOCALAPPDATA 'Temp'))) {
-        if ([string]::IsNullOrWhiteSpace($candidate)) {
-            continue
-        }
+    foreach ($candidate in @(
+            $env:TEMP,
+            (Join-Path $env:LOCALAPPDATA 'Temp'),
+            (Join-Path $env:WINDIR 'Temp'),
+            'C:\Windows\Temp'
+        )) {
+        Add-TempScanRoot -Roots $roots -Candidate $candidate
+    }
 
-        try {
-            $resolved = [System.IO.Path]::GetFullPath($candidate)
-            if (Test-Path -LiteralPath $resolved) {
-                [void]$roots.Add($resolved)
+    $usersRoot = Join-Path $env:SystemDrive 'Users'
+    if (Test-Path -LiteralPath $usersRoot) {
+        Get-ChildItem -LiteralPath $usersRoot -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notin @('All Users', 'Default', 'Default User', 'Public') } |
+            ForEach-Object {
+                Add-TempScanRoot -Roots $roots -Candidate (Join-Path $_.FullName 'AppData\Local\Temp')
             }
-        }
-        catch {
-            Write-Output "WARNING: Temp path not accessible: $candidate"
-        }
     }
 
     $list = [System.Collections.Generic.List[string]]::new()

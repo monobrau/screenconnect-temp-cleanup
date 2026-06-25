@@ -4,7 +4,7 @@ PowerShell utility for removing leftover ScreenConnect temp folders and old inst
 
 ## What it does
 
-- Scans `%TEMP%` and `%LOCALAPPDATA%\Temp` for stale ScreenConnect instance folders, including nested layouts like `ScreenConnect\{version}\{instance-id}\`
+- Scans session temp, `C:\Windows\Temp`, and **every user profile** `%LOCALAPPDATA%\Temp` for stale ScreenConnect instance folders, including nested layouts like `ScreenConnect\{version}\{instance-id}\`
 - Removes ScreenConnect installer files (`.msi`, `.exe`) dated **2025 or older**
 - Preserves the **currently installed** ScreenConnect client instance
 - **Dry-run by default** — reports findings without deleting until `-Delete` is used
@@ -37,7 +37,7 @@ Use `ScriptBlock` invocation so `-Delete` binds correctly. Add a cache-buster qu
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.1.0"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.0"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script))
 ```
@@ -50,12 +50,12 @@ $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.1.0"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.0"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script)) -Delete
 ```
 
-Output should begin with `=== ScreenConnect Temp Cleanup v1.1.0 ===`. If you do not see a version number, the endpoint is still running an old cached script — bump the `?v=` value or retry.
+Output should begin with `=== ScreenConnect Temp Cleanup v1.2.0 ===`. If you do not see a version number, the endpoint is still running an old cached script — bump the `?v=` value or retry.
 
 ## Local usage
 
