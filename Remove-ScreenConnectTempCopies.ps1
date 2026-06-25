@@ -27,19 +27,6 @@ param(
     [switch]$Force
 )
 
-# When invoked via SC: set $Delete = $true before Invoke-Expression
-if (-not $PSBoundParameters.ContainsKey('Delete')) {
-    try {
-        $parentDelete = Get-Variable -Name 'Delete' -Scope 1 -ErrorAction Stop
-        if ($null -ne $parentDelete -and [bool]$parentDelete.Value) {
-            $Delete = $true
-        }
-    }
-    catch {
-        # Running as a script file (-File); use -Delete parameter instead.
-    }
-}
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 

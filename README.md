@@ -27,6 +27,8 @@ The SC command tab runs in `cmd` by default with a 10-second timeout. Use hashba
 
 Replace `monobrau/screenconnect-temp-cleanup` if you fork or rename the repository.
 
+Use `ScriptBlock` invocation so `-Delete` binds correctly (do not use `$Delete = $true` with `Invoke-Expression`).
+
 ### Dry-run (recommended first)
 
 ```powershell
@@ -36,7 +38,8 @@ Replace `monobrau/screenconnect-temp-cleanup` if you fork or rename the reposito
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
 $url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1"
-Invoke-Expression (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
+$script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
+& ([ScriptBlock]::Create($script))
 ```
 
 ### Delete matched items
@@ -48,8 +51,8 @@ Invoke-Expression (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
 $url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1"
-$Delete = $true
-Invoke-Expression (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
+$script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
+& ([ScriptBlock]::Create($script)) -Delete
 ```
 
 ## Local usage
