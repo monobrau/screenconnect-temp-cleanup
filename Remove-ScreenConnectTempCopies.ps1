@@ -37,7 +37,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-$ScriptVersion = '1.5.0'
+$ScriptVersion = '1.5.1'
 
 $AutomatePackageNamePattern = 'connectwisecontrol|screenconnect|cwcontrol|connectwise.?control'
 $ScreenConnectVersionFolderPattern = '^\d+\.\d+\.\d+\.\d+$'
@@ -509,12 +509,7 @@ function Invoke-OldVersionFolderAction {
         return
     }
 
-    if (Test-FolderTooNew -Directory $VersionDirectory -Cutoff $Cutoff) {
-        Write-Result -Type 'Version-Folder' -Status 'SKIPPED (too new)' -Path $path -Detail ("modified {0:u}" -f $VersionDirectory.LastWriteTime)
-        $Stats.Value.SkippedFolders++
-        return
-    }
-
+    # Superseded version folders are stale upgrade cache — MinAgeHours only applies to the newest version folder
     if (-not $Delete) {
         Write-Result -Type 'Version-Folder' -Status 'WOULD REMOVE' -Path $path -Detail 'superseded upgrade cache'
         $Stats.Value.WouldRemoveFolders++
