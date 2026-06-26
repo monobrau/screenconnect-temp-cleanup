@@ -37,9 +37,10 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-$ScriptVersion = '1.4.0'
+$ScriptVersion = '1.5.0'
 
 $AutomatePackageNamePattern = 'connectwisecontrol|screenconnect|cwcontrol|connectwise.?control'
+$ScreenConnectVersionFolderPattern = '^\d+\.\d+\.\d+\.\d+$'
 
 if ($env:OS -notlike '*Windows*' -and -not $IsWindows) {
     Write-Output "ERROR: This script supports Windows endpoints only."
@@ -361,6 +362,178 @@ function Test-IsUnderActiveInstance {
     return $false
 }
 
+function Get-ScreenConnectVersionTextFromPath {
+    param([string]$Path)
+
+    if ($Path -match '\\ScreenConnect\\(\d+\.\d+\.\d+\.\d+)\\') {
+        return $Matches[1]
+    }
+
+    return $null
+}
+
+function Get-ScreenConnectRootFromPath {
+    param([string]$Path)
+
+    if ($Path -match '^(?<root>.*\\ScreenConnect)\\') {
+        return $Matches['root']
+    }
+
+    return $null
+}
+
+function ConvertTo-ScreenConnectVersion {
+    param([string]$VersionText)
+
+    try {
+        return [version]$VersionText
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-NewestVersionByScreenConnectRoot {
+    param([AllowNull()][object]$ScanRoots)
+
+    $map = @{}
+    foreach ($root in (Ensure-StringArray -InputObject $ScanRoots)) {
+        $scRoot = Join-Path $root 'ScreenConnect'
+        if (-not (Test-Path -LiteralPath $scRoot -ErrorAction SilentlyContinue)) {
+            continue
+        }
+
+        Get-ChildItem -LiteralPath $scRoot -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match $ScreenConnectVersionFolderPattern } |
+            ForEach-Object {
+                $ver = ConvertTo-ScreenConnectVersion -VersionText $_.Name
+                if ($null -eq $ver) {
+                    return
+                }
+
+                $key = $scRoot.ToLowerInvariant()
+                if (-not $map.ContainsKey($key) -or $ver -gt $map[$key].Version) {
+                    $map[$key] = @{
+                        Version     = $ver
+                        VersionText = $_.Name
+                        Path        = $_.FullName
+                    }
+                }
+            }
+    }
+
+    return $map
+}
+
+function Test-IsProtectedActiveInstancePath {
+    param(
+        [string]$Path,
+        [AllowNull()][object]$ActiveInstanceIds,
+        [datetime]$Cutoff,
+        [AllowNull()][object]$NewestVersionByScRoot
+    )
+
+    if (-not (Test-IsUnderActiveInstance -Path $Path -ActiveInstanceIds $ActiveInstanceIds)) {
+        return $false
+    }
+
+    $versionText = Get-ScreenConnectVersionTextFromPath -Path $Path
+    if (-not $versionText) {
+        # Flat ScreenConnect\{instance-id}\ layout (no version segment)
+        return $true
+    }
+
+    $scRoot = Get-ScreenConnectRootFromPath -Path $Path
+    if (-not $scRoot) {
+        return $true
+    }
+
+    $scKey = $scRoot.ToLowerInvariant()
+    if ($null -eq $NewestVersionByScRoot -or -not $NewestVersionByScRoot.ContainsKey($scKey)) {
+        return $false
+    }
+
+    $newest = $NewestVersionByScRoot[$scKey]
+    if ($versionText -ne $newest.VersionText) {
+        # Leftover cache from a prior upgrade — not needed once the client is running
+        return $false
+    }
+
+    # Newest version folder: keep only while a recent update may still be in progress
+    $versionDir = Get-Item -LiteralPath $newest.Path -Force -ErrorAction SilentlyContinue
+    if ($versionDir -and $versionDir.LastWriteTime -gt $Cutoff) {
+        return $true
+    }
+
+    return $false
+}
+
+function Get-ScreenConnectVersionFolderCandidates {
+    param([AllowNull()][object]$ScanRoots)
+
+    $candidates = New-DirectoryInfoList
+    foreach ($root in (Ensure-StringArray -InputObject $ScanRoots)) {
+        $scRoot = Join-Path $root 'ScreenConnect'
+        if (-not (Test-Path -LiteralPath $scRoot -ErrorAction SilentlyContinue)) {
+            continue
+        }
+
+        Get-ChildItem -LiteralPath $scRoot -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match $ScreenConnectVersionFolderPattern } |
+            ForEach-Object {
+                [void]$candidates.Add($_)
+            }
+    }
+
+    return $candidates
+}
+
+function Invoke-OldVersionFolderAction {
+    param(
+        [System.IO.DirectoryInfo]$VersionDirectory,
+        [AllowNull()][object]$NewestVersionByScRoot,
+        [datetime]$Cutoff,
+        [ref]$Stats,
+        [System.Collections.Generic.HashSet[string]]$RemovedPaths
+    )
+
+    $path = $VersionDirectory.FullName
+    $scRoot = Split-Path -Parent $path
+    $scKey = $scRoot.ToLowerInvariant()
+
+    if ($null -ne $NewestVersionByScRoot -and $NewestVersionByScRoot.ContainsKey($scKey) -and ($path -ieq $NewestVersionByScRoot[$scKey].Path)) {
+        return
+    }
+
+    if ($RemovedPaths.Contains($path.ToLowerInvariant())) {
+        return
+    }
+
+    if (Test-FolderTooNew -Directory $VersionDirectory -Cutoff $Cutoff) {
+        Write-Result -Type 'Version-Folder' -Status 'SKIPPED (too new)' -Path $path -Detail ("modified {0:u}" -f $VersionDirectory.LastWriteTime)
+        $Stats.Value.SkippedFolders++
+        return
+    }
+
+    if (-not $Delete) {
+        Write-Result -Type 'Version-Folder' -Status 'WOULD REMOVE' -Path $path -Detail 'superseded upgrade cache'
+        $Stats.Value.WouldRemoveFolders++
+        return
+    }
+
+    try {
+        Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+        [void]$RemovedPaths.Add($path.ToLowerInvariant())
+        Write-Result -Type 'Version-Folder' -Status 'REMOVED' -Path $path -Detail 'superseded upgrade cache'
+        $Stats.Value.RemovedFolders++
+        Remove-EmptyScreenConnectAncestors -StartPath $path
+    }
+    catch {
+        Write-Result -Type 'Version-Folder' -Status 'FAILED' -Path $path -Detail $_.Exception.Message
+        $Stats.Value.FailedFolders++
+    }
+}
+
 function Test-FolderTooNew {
     param(
         [System.IO.DirectoryInfo]$Directory,
@@ -424,7 +597,8 @@ function Invoke-FolderAction {
         [datetime]$Cutoff,
         [ref]$Stats,
         [System.Collections.Generic.HashSet[string]]$RemovedPaths,
-        [string]$ResultType = 'Folder'
+        [string]$ResultType = 'Folder',
+        [AllowNull()][object]$NewestVersionByScRoot = $null
     )
 
     $activeIds = Ensure-StringArray -InputObject $ActiveInstanceIds
@@ -432,9 +606,11 @@ function Invoke-FolderAction {
     $path = $Directory.FullName
 
     if ($instanceId -and ($activeIds -contains $instanceId)) {
-        Write-Result -Type $ResultType -Status 'SKIPPED (active)' -Path $path
-        $Stats.Value.SkippedFolders++
-        return
+        if (Test-IsProtectedActiveInstancePath -Path $path -ActiveInstanceIds $activeIds -Cutoff $Cutoff -NewestVersionByScRoot $NewestVersionByScRoot) {
+            Write-Result -Type $ResultType -Status 'SKIPPED (active)' -Path $path
+            $Stats.Value.SkippedFolders++
+            return
+        }
     }
 
     if (Test-FolderTooNew -Directory $Directory -Cutoff $Cutoff) {
@@ -470,7 +646,8 @@ function Invoke-InstallerAction {
         [ref]$Stats,
         [System.Collections.Generic.HashSet[string]]$RemovedPaths,
         [string]$ResultType = 'Installer',
-        [AllowNull()][object]$AutomateRootInstallers = $null
+        [AllowNull()][object]$AutomateRootInstallers = $null,
+        [AllowNull()][object]$NewestVersionByScRoot = $null
     )
 
     $activeIds = Ensure-StringArray -InputObject $ActiveInstanceIds
@@ -482,7 +659,7 @@ function Invoke-InstallerAction {
         return
     }
 
-    if (Test-IsUnderActiveInstance -Path $path -ActiveInstanceIds $activeIds) {
+    if (Test-IsProtectedActiveInstancePath -Path $path -ActiveInstanceIds $activeIds -Cutoff $Cutoff -NewestVersionByScRoot $NewestVersionByScRoot) {
         Write-Result -Type $ResultType -Status 'SKIPPED (active)' -Path $path
         $Stats.Value.SkippedInstallers++
         return
@@ -530,6 +707,7 @@ $activeInstanceIds = Ensure-StringArray (Get-ActiveScreenConnectInstanceId)
 $scanRoots = Ensure-StringArray (Get-TempScanRoots)
 $automateRoots = if ($SkipAutomateCache) { @() } else { Ensure-StringArray (Get-LtsvcAutomatePackageRoots) }
 $automateInstallersByRoot = if ($automateRoots.Length -gt 0) { Get-AutomatePackageInstallersByRoot -AutomateRoots $automateRoots } else { @{} }
+$newestVersionByScRoot = Get-NewestVersionByScreenConnectRoot -ScanRoots $scanRoots
 $folderCutoff = (Get-Date).AddHours(-1 * $MinAgeHours)
 $mode = if ($Delete) { 'DELETE' } else { 'DRY-RUN' }
 
@@ -579,7 +757,7 @@ foreach ($folder in $folderCandidates) {
         continue
     }
 
-    Invoke-FolderAction -Directory $folder -ActiveInstanceIds $activeInstanceIds -Cutoff $folderCutoff -Stats ([ref]$stats) -RemovedPaths $removedPaths
+    Invoke-FolderAction -Directory $folder -ActiveInstanceIds $activeInstanceIds -Cutoff $folderCutoff -Stats ([ref]$stats) -RemovedPaths $removedPaths -NewestVersionByScRoot $newestVersionByScRoot
 }
 
 foreach ($root in $scanRoots) {
@@ -590,8 +768,17 @@ foreach ($root in $scanRoots) {
                 return
             }
 
-            Invoke-InstallerAction -File $_ -ActiveInstanceIds $activeInstanceIds -Cutoff $folderCutoff -Stats ([ref]$stats) -RemovedPaths $removedPaths
+            Invoke-InstallerAction -File $_ -ActiveInstanceIds $activeInstanceIds -Cutoff $folderCutoff -Stats ([ref]$stats) -RemovedPaths $removedPaths -NewestVersionByScRoot $newestVersionByScRoot
         }
+}
+
+$seenVersionFolders = New-StringHashSet
+foreach ($versionFolder in (Get-ScreenConnectVersionFolderCandidates -ScanRoots $scanRoots)) {
+    if (-not $seenVersionFolders.Add($versionFolder.FullName)) {
+        continue
+    }
+
+    Invoke-OldVersionFolderAction -VersionDirectory $versionFolder -NewestVersionByScRoot $newestVersionByScRoot -Cutoff $folderCutoff -Stats ([ref]$stats) -RemovedPaths $removedPaths
 }
 
 if ($automateRoots.Length -gt 0) {

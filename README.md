@@ -9,6 +9,7 @@ PowerShell utility for removing leftover ScreenConnect temp folders and old inst
 - Cleans **ConnectWise Automate (LTSvc) package cache** under `C:\Windows\LTSvc\packages\connectwisecontrol\` (and similar ScreenConnect package folders)
 - Removes ScreenConnect installer files (`.msi`, `.exe`) dated **2025 or older**
 - Preserves the **currently installed** ScreenConnect client instance and the **newest** Automate package cache copy per folder
+- Removes **superseded version folders** under `ScreenConnect\{version}\` (old upgrade cache no longer needed once the client is running)
 - **Dry-run by default** — reports findings without deleting until `-Delete` is used
 
 ## Safety
@@ -42,7 +43,7 @@ Use `ScriptBlock` invocation so `-Delete` binds correctly. Add a cache-buster qu
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.4.0"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.5.0"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script))
 ```
@@ -55,7 +56,7 @@ $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.4.0"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.5.0"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script)) -Delete
 ```
@@ -73,7 +74,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { [Net.ServicePoin
 
 For dry-run, remove `-Delete` from the end of the `-Command` block.
 
-Output should begin with `=== ScreenConnect Temp Cleanup v1.4.0 ===`. If you do not see a version number, the endpoint is still running an old cached script — bump the `?v=` value or retry.
+Output should begin with `=== ScreenConnect Temp Cleanup v1.5.0 ===`.
 
 ## Local usage
 
