@@ -67,7 +67,7 @@ Use this on **Windows only** when the hashbang is not routed to PowerShell:
 #!cmd
 #timeout=120000
 #maxlength=100000
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $url = 'https://raw.githubusercontent.com/monobrau/screenconnect-temp-cleanup/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.1'; $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content; & ([ScriptBlock]::Create($script)) -Delete }"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $url = 'https://raw.githubusercontent.com/monobrau/screenconnect-temp-cleanup/main/Remove-ScreenConnectTempCopies.ps1?v=1.3.0'; $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content; & ([ScriptBlock]::Create($script)) -Delete }"
 ```
 
 For dry-run, remove `-Delete` from the end of the `-Command` block.
