@@ -30,7 +30,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-$ScriptVersion = '1.2.1'
+$ScriptVersion = '1.2.2'
 
 if ($env:OS -notlike '*Windows*' -and -not $IsWindows) {
     Write-Output "ERROR: This script supports Windows endpoints only."
@@ -40,6 +40,18 @@ if ($env:OS -notlike '*Windows*' -and -not $IsWindows) {
 $InstanceIdPattern = '[a-f0-9]{16}'
 $HashFolderPattern = "^$InstanceIdPattern$"
 $ScreenConnectClientFolderPattern = '^ScreenConnect Client \([a-f0-9]{16}\)$'
+
+function New-StringHashSet {
+    New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+}
+
+function New-StringList {
+    New-Object 'System.Collections.Generic.List[string]'
+}
+
+function New-DirectoryInfoList {
+    New-Object 'System.Collections.Generic.List[System.IO.DirectoryInfo]'
+}
 
 function Write-Result {
     param(
@@ -80,7 +92,7 @@ function Ensure-StringArray {
 }
 
 function Get-ActiveScreenConnectInstanceId {
-    $instanceIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $instanceIds = New-StringHashSet
 
     Get-Service -Name 'ScreenConnect Client*' -ErrorAction SilentlyContinue | ForEach-Object {
         if ($_.Name -match "\(($InstanceIdPattern)\)") {
@@ -107,7 +119,7 @@ function Get-ActiveScreenConnectInstanceId {
         }
     }
 
-    $list = [System.Collections.Generic.List[string]]::new()
+    $list = New-StringList
     foreach ($id in $instanceIds) {
         [void]$list.Add($id)
     }
@@ -132,12 +144,12 @@ function Add-TempScanRoot {
         }
     }
     catch {
-        Write-Output "WARNING: Temp path not accessible: $Candidate"
+        Write-Warning "Temp path not accessible: $Candidate"
     }
 }
 
 function Get-TempScanRoots {
-    $roots = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $roots = New-StringHashSet
 
     foreach ($candidate in @(
             $env:TEMP,
@@ -157,7 +169,7 @@ function Get-TempScanRoots {
             }
     }
 
-    $list = [System.Collections.Generic.List[string]]::new()
+    $list = New-StringList
     foreach ($root in $roots) {
         [void]$list.Add($root)
     }
@@ -169,7 +181,7 @@ function Get-InstanceFolderCandidates {
     param([AllowNull()][object]$ScanRoots)
 
     $roots = Ensure-StringArray -InputObject $ScanRoots
-    $candidates = [System.Collections.Generic.List[System.IO.DirectoryInfo]]::new()
+    $candidates = New-DirectoryInfoList
 
     foreach ($root in $roots) {
         $screenConnectRoot = Join-Path $root 'ScreenConnect'
@@ -437,11 +449,11 @@ $stats = @{
     FailedInstallers      = 0
 }
 
-$removedPaths = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-$seenInstallers = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$removedPaths = New-StringHashSet
+$seenInstallers = New-StringHashSet
 $folderCandidates = Get-InstanceFolderCandidates -ScanRoots $scanRoots
 
-$seenFolders = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$seenFolders = New-StringHashSet
 foreach ($folder in $folderCandidates) {
     if (-not $seenFolders.Add($folder.FullName)) {
         continue
