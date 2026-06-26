@@ -5,14 +5,16 @@ PowerShell utility for removing leftover ScreenConnect temp folders and old inst
 ## What it does
 
 - Scans session temp, `C:\Windows\Temp`, and **every user profile** `%LOCALAPPDATA%\Temp` for stale ScreenConnect instance folders, including nested layouts like `ScreenConnect\{version}\{instance-id}\`
+- Cleans **ConnectWise Automate (LTSvc) package cache** under `C:\Windows\LTSvc\packages\connectwisecontrol\` (and similar ScreenConnect package folders)
 - Removes ScreenConnect installer files (`.msi`, `.exe`) dated **2025 or older**
-- Preserves the **currently installed** ScreenConnect client instance
+- Preserves the **currently installed** ScreenConnect client instance and the **newest** Automate package cache copy per folder
 - **Dry-run by default** — reports findings without deleting until `-Delete` is used
 
 ## Safety
 
-- Temp folders only — does not touch `Program Files`, `ProgramData`, or registry
+- Temp folders and Automate package cache — does not touch `Program Files`, `ProgramData`, or registry
 - Skips folders/files belonging to the active ScreenConnect client service
+- Skips the newest installer in each Automate package folder (Automate's in-use deployment copy)
 - Skips temp folders modified within the last 24 hours (configurable)
 - Skips installer files from 2026 onward
 
@@ -39,7 +41,7 @@ Use `ScriptBlock` invocation so `-Delete` binds correctly. Add a cache-buster qu
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.1"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.3.0"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script))
 ```
@@ -52,7 +54,7 @@ $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.2.1"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.3.0"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script)) -Delete
 ```
@@ -70,7 +72,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { [Net.ServicePoin
 
 For dry-run, remove `-Delete` from the end of the `-Command` block.
 
-Output should begin with `=== ScreenConnect Temp Cleanup v1.2.1 ===`. If you do not see a version number, the endpoint is still running an old cached script — bump the `?v=` value or retry.
+Output should begin with `=== ScreenConnect Temp Cleanup v1.3.0 ===`. If you do not see a version number, the endpoint is still running an old cached script — bump the `?v=` value or retry.
 
 ## Local usage
 
@@ -92,6 +94,7 @@ Output should begin with `=== ScreenConnect Temp Cleanup v1.2.1 ===`. If you do 
 | `-Delete` | off | Remove matched folders and installer files |
 | `-MinAgeHours` | `24` | Skip temp folders modified within this many hours |
 | `-MaxInstallerYear` | `2025` | Remove installers with LastWriteTime year <= this value |
+| `-SkipAutomateCache` | off | Skip `C:\Windows\LTSvc\packages` ScreenConnect Automate cache |
 | `-Force` | off | Skip the folder age check |
 
 ## Example output

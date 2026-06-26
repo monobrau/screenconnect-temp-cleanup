@@ -5,7 +5,9 @@
 
 .DESCRIPTION
     Finds leftover ScreenConnect temp folders and installer files (.msi/.exe) dated
-    2025 or older. Preserves the currently installed client. Dry-run by default.
+    2025 or older. Also cleans stale ConnectWise Automate (LTSvc) package cache
+    for ScreenConnect when not in use. Preserves the currently installed client.
+    Dry-run by default.
 
 .PARAMETER Delete
     Actually remove matched items. Without this switch, only reports findings.
@@ -16,6 +18,9 @@
 .PARAMETER MaxInstallerYear
     Remove installer files with LastWriteTime year less than or equal to this value.
 
+.PARAMETER SkipAutomateCache
+    Do not scan or clean C:\Windows\LTSvc\packages ScreenConnect Automate cache.
+
 .PARAMETER Force
     Skip the MinAgeHours folder age check.
 #>
@@ -24,13 +29,16 @@ param(
     [switch]$Delete,
     [int]$MinAgeHours = 24,
     [int]$MaxInstallerYear = 2025,
+    [switch]$SkipAutomateCache,
     [switch]$Force
 )
 
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-$ScriptVersion = '1.2.2'
+$ScriptVersion = '1.3.0'
+
+$AutomatePackageNamePattern = 'connectwisecontrol|screenconnect|cwcontrol|connectwise.?control'
 
 if ($env:OS -notlike '*Windows*' -and -not $IsWindows) {
     Write-Output "ERROR: This script supports Windows endpoints only."
@@ -242,7 +250,61 @@ function Test-IsScreenConnectInstallerFile {
         return $true
     }
 
+    if ($parentPath -match '\\LTSvc\\packages\\') {
+        return $true
+    }
+
     return $false
+}
+
+function Test-IsAutomatePackageName {
+    param([string]$Name)
+
+    return ($Name.ToLowerInvariant() -match $AutomatePackageNamePattern)
+}
+
+function Get-LtsvcAutomatePackageRoots {
+    $packagesRoot = Join-Path $env:WINDIR 'LTSvc\packages'
+    if (-not (Test-Path -LiteralPath $packagesRoot)) {
+        return @()
+    }
+
+    $roots = New-StringList
+    Get-ChildItem -LiteralPath $packagesRoot -Directory -Force -ErrorAction SilentlyContinue |
+        Where-Object { Test-IsAutomatePackageName -Name $_.Name } |
+        ForEach-Object {
+            [void]$roots.Add($_.FullName)
+        }
+
+    return [string[]]($roots.ToArray())
+}
+
+function Get-AutomatePackageInstallersByRoot {
+    param([AllowNull()][object]$AutomateRoots)
+
+    $map = @{}
+    foreach ($root in (Ensure-StringArray -InputObject $AutomateRoots)) {
+        $installers = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { Test-IsScreenConnectInstallerFile -File $_ })
+        $map[$root.ToLowerInvariant()] = $installers
+    }
+
+    return $map
+}
+
+function Test-IsNewestAutomatePackageInstaller {
+    param(
+        [System.IO.FileInfo]$File,
+        [AllowNull()][object]$RootInstallers
+    )
+
+    $installers = @($RootInstallers)
+    if ($installers.Count -eq 0) {
+        return $false
+    }
+
+    $newest = $installers | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    return ($newest.FullName -ieq $File.FullName)
 }
 
 function Test-IsUnderActiveInstance {
@@ -326,7 +388,8 @@ function Invoke-FolderAction {
         [AllowNull()][object]$ActiveInstanceIds,
         [datetime]$Cutoff,
         [ref]$Stats,
-        [System.Collections.Generic.HashSet[string]]$RemovedPaths
+        [System.Collections.Generic.HashSet[string]]$RemovedPaths,
+        [string]$ResultType = 'Folder'
     )
 
     $activeIds = Ensure-StringArray -InputObject $ActiveInstanceIds
@@ -334,19 +397,19 @@ function Invoke-FolderAction {
     $path = $Directory.FullName
 
     if ($instanceId -and ($activeIds -contains $instanceId)) {
-        Write-Result -Type 'Folder' -Status 'SKIPPED (active)' -Path $path
+        Write-Result -Type $ResultType -Status 'SKIPPED (active)' -Path $path
         $Stats.Value.SkippedFolders++
         return
     }
 
     if (Test-FolderTooNew -Directory $Directory -Cutoff $Cutoff) {
-        Write-Result -Type 'Folder' -Status 'SKIPPED (too new)' -Path $path -Detail ("modified {0:u}" -f $Directory.LastWriteTime)
+        Write-Result -Type $ResultType -Status 'SKIPPED (too new)' -Path $path -Detail ("modified {0:u}" -f $Directory.LastWriteTime)
         $Stats.Value.SkippedFolders++
         return
     }
 
     if (-not $Delete) {
-        Write-Result -Type 'Folder' -Status 'WOULD REMOVE' -Path $path
+        Write-Result -Type $ResultType -Status 'WOULD REMOVE' -Path $path
         $Stats.Value.WouldRemoveFolders++
         return
     }
@@ -354,12 +417,12 @@ function Invoke-FolderAction {
     try {
         Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
         [void]$RemovedPaths.Add($path.ToLowerInvariant())
-        Write-Result -Type 'Folder' -Status 'REMOVED' -Path $path
+        Write-Result -Type $ResultType -Status 'REMOVED' -Path $path
         $Stats.Value.RemovedFolders++
         Remove-EmptyScreenConnectAncestors -StartPath $path
     }
     catch {
-        Write-Result -Type 'Folder' -Status 'FAILED' -Path $path -Detail $_.Exception.Message
+        Write-Result -Type $ResultType -Status 'FAILED' -Path $path -Detail $_.Exception.Message
         $Stats.Value.FailedFolders++
     }
 }
@@ -370,7 +433,9 @@ function Invoke-InstallerAction {
         [AllowNull()][object]$ActiveInstanceIds,
         [datetime]$Cutoff,
         [ref]$Stats,
-        [System.Collections.Generic.HashSet[string]]$RemovedPaths
+        [System.Collections.Generic.HashSet[string]]$RemovedPaths,
+        [string]$ResultType = 'Installer',
+        [AllowNull()][object]$AutomateRootInstallers = $null
     )
 
     $activeIds = Ensure-StringArray -InputObject $ActiveInstanceIds
@@ -383,26 +448,32 @@ function Invoke-InstallerAction {
     }
 
     if (Test-IsUnderActiveInstance -Path $path -ActiveInstanceIds $activeIds) {
-        Write-Result -Type 'Installer' -Status 'SKIPPED (active)' -Path $path
+        Write-Result -Type $ResultType -Status 'SKIPPED (active)' -Path $path
+        $Stats.Value.SkippedInstallers++
+        return
+    }
+
+    if ($AutomateRootInstallers -and (Test-IsNewestAutomatePackageInstaller -File $File -RootInstallers $AutomateRootInstallers)) {
+        Write-Result -Type $ResultType -Status 'SKIPPED (in use)' -Path $path -Detail 'newest Automate package cache copy'
         $Stats.Value.SkippedInstallers++
         return
     }
 
     $fileYear = $File.LastWriteTime.Year
     if ($fileYear -gt $MaxInstallerYear) {
-        Write-Result -Type 'Installer' -Status 'SKIPPED (year > cutoff)' -Path $path -Detail ("LastWriteTime year {0}, cutoff {1}" -f $fileYear, $MaxInstallerYear)
+        Write-Result -Type $ResultType -Status 'SKIPPED (year > cutoff)' -Path $path -Detail ("LastWriteTime year {0}, cutoff {1}" -f $fileYear, $MaxInstallerYear)
         $Stats.Value.SkippedInstallers++
         return
     }
 
     if (Test-InstallerInProgress -File $File -ActiveInstanceIds $activeIds -Cutoff $Cutoff) {
-        Write-Result -Type 'Installer' -Status 'SKIPPED (too new)' -Path $path -Detail 'active client reinstall in progress'
+        Write-Result -Type $ResultType -Status 'SKIPPED (too new)' -Path $path -Detail 'active client reinstall in progress'
         $Stats.Value.SkippedInstallers++
         return
     }
 
     if (-not $Delete) {
-        Write-Result -Type 'Installer' -Status 'WOULD REMOVE' -Path $path -Detail ("LastWriteTime {0:yyyy-MM-dd}" -f $File.LastWriteTime)
+        Write-Result -Type $ResultType -Status 'WOULD REMOVE' -Path $path -Detail ("LastWriteTime {0:yyyy-MM-dd}" -f $File.LastWriteTime)
         $Stats.Value.WouldRemoveInstallers++
         return
     }
@@ -410,18 +481,20 @@ function Invoke-InstallerAction {
     try {
         Remove-Item -LiteralPath $path -Force -ErrorAction Stop
         [void]$RemovedPaths.Add($path.ToLowerInvariant())
-        Write-Result -Type 'Installer' -Status 'REMOVED' -Path $path -Detail ("LastWriteTime {0:yyyy-MM-dd}" -f $File.LastWriteTime)
+        Write-Result -Type $ResultType -Status 'REMOVED' -Path $path -Detail ("LastWriteTime {0:yyyy-MM-dd}" -f $File.LastWriteTime)
         $Stats.Value.RemovedInstallers++
         Remove-EmptyScreenConnectAncestors -StartPath $path
     }
     catch {
-        Write-Result -Type 'Installer' -Status 'FAILED' -Path $path -Detail $_.Exception.Message
+        Write-Result -Type $ResultType -Status 'FAILED' -Path $path -Detail $_.Exception.Message
         $Stats.Value.FailedInstallers++
     }
 }
 
 $activeInstanceIds = Ensure-StringArray (Get-ActiveScreenConnectInstanceId)
 $scanRoots = Ensure-StringArray (Get-TempScanRoots)
+$automateRoots = if ($SkipAutomateCache) { @() } else { Ensure-StringArray (Get-LtsvcAutomatePackageRoots) }
+$automateInstallersByRoot = if ($automateRoots.Length -gt 0) { Get-AutomatePackageInstallersByRoot -AutomateRoots $automateRoots } else { @{} }
 $folderCutoff = (Get-Date).AddHours(-1 * $MinAgeHours)
 $mode = if ($Delete) { 'DELETE' } else { 'DRY-RUN' }
 
@@ -429,6 +502,7 @@ Write-Output "=== ScreenConnect Temp Cleanup v$ScriptVersion ==="
 Write-Output "Mode: $mode"
 Write-Output "Active instance ID(s): $(if ($activeInstanceIds -and $activeInstanceIds.Length -gt 0) { ($activeInstanceIds -join ', ') } else { '(none detected)' })"
 Write-Output "Scan roots: $(($scanRoots -join '; '))"
+Write-Output "Automate cache roots: $(if ($automateRoots.Length -gt 0) { ($automateRoots -join '; ') } else { '(none or skipped)' })"
 Write-Output "Folder min age: $MinAgeHours hour(s)$(if ($Force) { ' (Force: age check disabled)' } else { '' })"
 Write-Output "Installer year cutoff: <= $MaxInstallerYear"
 Write-Output ''
@@ -439,6 +513,17 @@ if (-not $activeInstanceIds -or $activeInstanceIds.Length -eq 0) {
 }
 
 $stats = @{
+    WouldRemoveFolders    = 0
+    RemovedFolders        = 0
+    SkippedFolders        = 0
+    FailedFolders         = 0
+    WouldRemoveInstallers = 0
+    RemovedInstallers     = 0
+    SkippedInstallers     = 0
+    FailedInstallers      = 0
+}
+
+$automateStats = @{
     WouldRemoveFolders    = 0
     RemovedFolders        = 0
     SkippedFolders        = 0
@@ -474,14 +559,53 @@ foreach ($root in $scanRoots) {
         }
 }
 
+if ($automateRoots.Length -gt 0) {
+    Write-Output ''
+    Write-Output '--- ConnectWise Automate (LTSvc) package cache ---'
+
+    $automateFolderCandidates = Get-InstanceFolderCandidates -ScanRoots $automateRoots
+    $seenAutomateFolders = New-StringHashSet
+    foreach ($folder in $automateFolderCandidates) {
+        if (-not $seenAutomateFolders.Add($folder.FullName)) {
+            continue
+        }
+
+        Invoke-FolderAction -Directory $folder -ActiveInstanceIds $activeInstanceIds -Cutoff $folderCutoff -Stats ([ref]$automateStats) -RemovedPaths $removedPaths -ResultType 'Automate-Folder'
+    }
+
+    $seenAutomateInstallers = New-StringHashSet
+    foreach ($root in $automateRoots) {
+        $rootKey = $root.ToLowerInvariant()
+        $rootInstallers = $automateInstallersByRoot[$rootKey]
+
+        Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue |
+            Where-Object { Test-IsScreenConnectInstallerFile -File $_ } |
+            ForEach-Object {
+                if (-not $seenAutomateInstallers.Add($_.FullName)) {
+                    return
+                }
+
+                Invoke-InstallerAction -File $_ -ActiveInstanceIds $activeInstanceIds -Cutoff $folderCutoff -Stats ([ref]$automateStats) -RemovedPaths $removedPaths -ResultType 'Automate-Installer' -AutomateRootInstallers $rootInstallers
+            }
+    }
+}
+
 Write-Output ''
 Write-Output '=== Summary ==='
 if ($Delete) {
-    Write-Output ("Folders removed: {0}; skipped: {1}; failed: {2}" -f $stats.RemovedFolders, $stats.SkippedFolders, $stats.FailedFolders)
-    Write-Output ("Installers removed: {0}; skipped: {1}; failed: {2}" -f $stats.RemovedInstallers, $stats.SkippedInstallers, $stats.FailedInstallers)
+    Write-Output ("Temp folders removed: {0}; skipped: {1}; failed: {2}" -f $stats.RemovedFolders, $stats.SkippedFolders, $stats.FailedFolders)
+    Write-Output ("Temp installers removed: {0}; skipped: {1}; failed: {2}" -f $stats.RemovedInstallers, $stats.SkippedInstallers, $stats.FailedInstallers)
+    if ($automateRoots.Length -gt 0) {
+        Write-Output ("Automate cache folders removed: {0}; skipped: {1}; failed: {2}" -f $automateStats.RemovedFolders, $automateStats.SkippedFolders, $automateStats.FailedFolders)
+        Write-Output ("Automate cache installers removed: {0}; skipped: {1}; failed: {2}" -f $automateStats.RemovedInstallers, $automateStats.SkippedInstallers, $automateStats.FailedInstallers)
+    }
 }
 else {
-    Write-Output ("Folders would remove: {0}; skipped: {1}" -f $stats.WouldRemoveFolders, $stats.SkippedFolders)
-    Write-Output ("Installers would remove: {0}; skipped: {1}" -f $stats.WouldRemoveInstallers, $stats.SkippedInstallers)
+    Write-Output ("Temp folders would remove: {0}; skipped: {1}" -f $stats.WouldRemoveFolders, $stats.SkippedFolders)
+    Write-Output ("Temp installers would remove: {0}; skipped: {1}" -f $stats.WouldRemoveInstallers, $stats.SkippedInstallers)
+    if ($automateRoots.Length -gt 0) {
+        Write-Output ("Automate cache folders would remove: {0}; skipped: {1}" -f $automateStats.WouldRemoveFolders, $automateStats.SkippedFolders)
+        Write-Output ("Automate cache installers would remove: {0}; skipped: {1}" -f $automateStats.WouldRemoveInstallers, $automateStats.SkippedInstallers)
+    }
     Write-Output 'No changes made. Re-run with -Delete to remove matched items.'
 }
