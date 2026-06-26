@@ -5,9 +5,10 @@
 
 .DESCRIPTION
     Finds leftover ScreenConnect temp folders and installer files (.msi/.exe) dated
-    2025 or older. Also cleans stale ConnectWise Automate (LTSvc) package cache
-    for ScreenConnect when not in use. Preserves the currently installed client.
-    Dry-run by default.
+    2025 or older. Scans temp paths, user profile download locations, SystemTemp,
+    and service profile temps. Also cleans stale ConnectWise Automate (LTSvc)
+    package cache for ScreenConnect when not in use. Preserves the currently
+    installed client. Dry-run by default.
 
 .PARAMETER Delete
     Actually remove matched items. Without this switch, only reports findings.
@@ -36,7 +37,7 @@ param(
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-$ScriptVersion = '1.3.0'
+$ScriptVersion = '1.4.0'
 
 $AutomatePackageNamePattern = 'connectwisecontrol|screenconnect|cwcontrol|connectwise.?control'
 
@@ -156,25 +157,59 @@ function Add-TempScanRoot {
     }
 }
 
+function Get-UserProfileRelativeScanPaths {
+    return @(
+        'Downloads',
+        'Desktop',
+        'Documents',
+        'AppData\Local\Temp',
+        'AppData\Local\Microsoft\Windows\INetCache',
+        'AppData\Local\Microsoft\Windows\Temporary Internet Files'
+    )
+}
+
+function Get-SystemScanPaths {
+    $windir = $env:WINDIR
+    if ([string]::IsNullOrWhiteSpace($windir)) {
+        $windir = 'C:\Windows'
+    }
+
+    return @(
+        (Join-Path $windir 'Temp'),
+        (Join-Path $windir 'SystemTemp'),
+        (Join-Path $windir 'System32\config\systemprofile\AppData\Local\Temp'),
+        (Join-Path $windir 'ServiceProfiles\LocalService\AppData\Local\Temp'),
+        (Join-Path $windir 'ServiceProfiles\NetworkService\AppData\Local\Temp')
+    )
+}
+
 function Get-TempScanRoots {
     $roots = New-StringHashSet
 
-    foreach ($candidate in @(
-            $env:TEMP,
-            (Join-Path $env:LOCALAPPDATA 'Temp'),
-            (Join-Path $env:WINDIR 'Temp'),
-            'C:\Windows\Temp'
-        )) {
+    foreach ($candidate in @($env:TEMP, (Join-Path $env:LOCALAPPDATA 'Temp'))) {
+        Add-TempScanRoot -Roots $roots -Candidate $candidate
+    }
+
+    foreach ($candidate in (Get-SystemScanPaths)) {
         Add-TempScanRoot -Roots $roots -Candidate $candidate
     }
 
     $usersRoot = Join-Path $env:SystemDrive 'Users'
+    $profileSubpaths = Get-UserProfileRelativeScanPaths
+    $excludedProfiles = @('All Users', 'Default', 'Default User', 'DefaultAppPool')
+
     if (Test-Path -LiteralPath $usersRoot) {
         Get-ChildItem -LiteralPath $usersRoot -Directory -Force -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -notin @('All Users', 'Default', 'Default User', 'Public') } |
+            Where-Object { $_.Name -notin $excludedProfiles -and $_.Name -notlike 'Default*' } |
             ForEach-Object {
-                Add-TempScanRoot -Roots $roots -Candidate (Join-Path $_.FullName 'AppData\Local\Temp')
+                foreach ($subpath in $profileSubpaths) {
+                    Add-TempScanRoot -Roots $roots -Candidate (Join-Path $_.FullName $subpath)
+                }
             }
+
+        foreach ($subpath in @('Downloads', 'Desktop')) {
+            Add-TempScanRoot -Roots $roots -Candidate (Join-Path $usersRoot (Join-Path 'Public' $subpath))
+        }
     }
 
     $list = New-StringList
