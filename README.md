@@ -8,6 +8,7 @@ PowerShell utility for removing leftover ScreenConnect temp folders and old inst
 - User profile paths include **Downloads**, **Desktop**, **Documents**, `%LOCALAPPDATA%\Temp`, and browser cache folders (`INetCache`, Temporary Internet Files), plus `C:\Users\Public\Downloads` and `Desktop`
 - Cleans **ConnectWise Automate (LTSvc) package cache** under `C:\Windows\LTSvc\packages\connectwisecontrol\` (and similar ScreenConnect package folders)
 - Removes ScreenConnect installer files (`.msi`, `.exe`) dated **2025 or older**
+- Finds **ConnectWise-signed** `.exe`/`.msi` installers in user **Downloads** and **Desktop** folders even when the filename is MSP-branded (e.g. `RRC.RemoteSupport.Client.exe`) — identified by authenticode signature, not filename
 - Preserves the **currently installed** ScreenConnect client instance and the **newest** Automate package cache copy per folder
 - Removes **superseded version folders** under `ScreenConnect\{version}\` (old upgrade cache no longer needed once the client is running)
 - **Dry-run by default** — reports findings without deleting until `-Delete` is used
@@ -18,7 +19,8 @@ PowerShell utility for removing leftover ScreenConnect temp folders and old inst
 - Skips folders/files belonging to the active ScreenConnect client service
 - Skips the newest installer in each Automate package folder (Automate's in-use deployment copy)
 - Skips temp folders modified within the last 24 hours (configurable)
-- Skips installer files from 2026 onward
+- Skips installer files from 2026 onward (name/path matches only; ConnectWise-signed Downloads/Desktop installers are removed regardless of year)
+- Branded installer detection requires a **Valid** authenticode signature whose subject contains `ConnectWise` or `ScreenConnect` — unsigned or third-party-signed `.exe` files in Downloads are not touched
 
 ## Requirements
 
@@ -43,7 +45,7 @@ Use `ScriptBlock` invocation so `-Delete` binds correctly. Add a cache-buster qu
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.5.1"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.6.0"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script))
 ```
@@ -56,7 +58,7 @@ $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 #maxlength=100000
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'monobrau/screenconnect-temp-cleanup'
-$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.5.1"
+$url = "https://raw.githubusercontent.com/$repo/main/Remove-ScreenConnectTempCopies.ps1?v=1.6.0"
 $script = (Invoke-WebRequest -Uri $url -UseBasicParsing).Content
 & ([ScriptBlock]::Create($script)) -Delete
 ```
@@ -74,7 +76,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { [Net.ServicePoin
 
 For dry-run, remove `-Delete` from the end of the `-Command` block.
 
-Output should begin with `=== ScreenConnect Temp Cleanup v1.5.1 ===`.
+Output should begin with `=== ScreenConnect Temp Cleanup v1.6.0 ===`.
 
 ## Local usage
 
@@ -97,6 +99,7 @@ Output should begin with `=== ScreenConnect Temp Cleanup v1.5.1 ===`.
 | `-MinAgeHours` | `24` | Skip temp folders modified within this many hours |
 | `-MaxInstallerYear` | `2025` | Remove installers with LastWriteTime year <= this value |
 | `-SkipAutomateCache` | off | Skip `C:\Windows\LTSvc\packages` ScreenConnect Automate cache |
+| `-SkipBrandedInstallerScan` | off | Skip ConnectWise signature scan of Downloads/Desktop installers |
 | `-Force` | off | Skip the folder age check |
 
 ## Example output

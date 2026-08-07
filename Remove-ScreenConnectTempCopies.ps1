@@ -7,8 +7,9 @@
     Finds leftover ScreenConnect temp folders and installer files (.msi/.exe) dated
     2025 or older. Scans temp paths, user profile download locations, SystemTemp,
     and service profile temps. Also cleans stale ConnectWise Automate (LTSvc)
-    package cache for ScreenConnect when not in use. Preserves the currently
-    installed client. Dry-run by default.
+    package cache for ScreenConnect when not in use. Also finds ConnectWise-signed .exe/.msi
+    installers in user Downloads and Desktop folders (including MSP-branded names like
+    RRC.RemoteSupport.Client.exe). Preserves the currently installed client. Dry-run by default.
 
 .PARAMETER Delete
     Actually remove matched items. Without this switch, only reports findings.
@@ -18,9 +19,13 @@
 
 .PARAMETER MaxInstallerYear
     Remove installer files with LastWriteTime year less than or equal to this value.
+    Does not apply to ConnectWise-signed installers found in Downloads or Desktop.
 
 .PARAMETER SkipAutomateCache
     Do not scan or clean C:\Windows\LTSvc\packages ScreenConnect Automate cache.
+
+.PARAMETER SkipBrandedInstallerScan
+    Do not scan Downloads/Desktop for ConnectWise-signed installer files.
 
 .PARAMETER Force
     Skip the MinAgeHours folder age check.
@@ -31,16 +36,18 @@ param(
     [int]$MinAgeHours = 24,
     [int]$MaxInstallerYear = 2025,
     [switch]$SkipAutomateCache,
+    [switch]$SkipBrandedInstallerScan,
     [switch]$Force
 )
 
 Set-StrictMode -Off
 $ErrorActionPreference = 'Stop'
 
-$ScriptVersion = '1.5.1'
+$ScriptVersion = '1.6.0'
 
 $AutomatePackageNamePattern = 'connectwisecontrol|screenconnect|cwcontrol|connectwise.?control'
 $ScreenConnectVersionFolderPattern = '^\d+\.\d+\.\d+\.\d+$'
+$ConnectWiseSignerSubjectPattern = '(?i)connectwise|screenconnect'
 
 if ($env:OS -notlike '*Windows*' -and -not $IsWindows) {
     Write-Output "ERROR: This script supports Windows endpoints only."
@@ -169,6 +176,34 @@ function Get-UserProfileRelativeScanPaths {
     )
 }
 
+function Get-BrandedInstallerScanRoots {
+    $roots = New-StringHashSet
+    $relativePaths = @('Downloads', 'Desktop')
+    $usersRoot = Join-Path $env:SystemDrive 'Users'
+    $excludedProfiles = @('All Users', 'Default', 'Default User', 'DefaultAppPool')
+
+    if (Test-Path -LiteralPath $usersRoot) {
+        Get-ChildItem -LiteralPath $usersRoot -Directory -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notin $excludedProfiles -and $_.Name -notlike 'Default*' } |
+            ForEach-Object {
+                foreach ($subpath in $relativePaths) {
+                    Add-TempScanRoot -Roots $roots -Candidate (Join-Path $_.FullName $subpath)
+                }
+            }
+
+        foreach ($subpath in $relativePaths) {
+            Add-TempScanRoot -Roots $roots -Candidate (Join-Path $usersRoot (Join-Path 'Public' $subpath))
+        }
+    }
+
+    $list = New-StringList
+    foreach ($root in $roots) {
+        [void]$list.Add($root)
+    }
+
+    return [string[]]($list.ToArray())
+}
+
 function Get-SystemScanPaths {
     $windir = $env:WINDIR
     if ([string]::IsNullOrWhiteSpace($windir)) {
@@ -291,6 +326,38 @@ function Test-IsScreenConnectInstallerFile {
     }
 
     return $false
+}
+
+$ConnectWiseSignatureCache = @{}
+
+function Test-IsConnectWiseSignedInstaller {
+    param(
+        [System.IO.FileInfo]$File
+    )
+
+    $extension = $File.Extension.ToLowerInvariant()
+    if ($extension -notin @('.msi', '.exe')) {
+        return $false
+    }
+
+    $cacheKey = $File.FullName.ToLowerInvariant()
+    if ($ConnectWiseSignatureCache.ContainsKey($cacheKey)) {
+        return $ConnectWiseSignatureCache[$cacheKey]
+    }
+
+    $isMatch = $false
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $File.FullName -ErrorAction Stop
+        if ($signature.Status -eq 'Valid' -and $null -ne $signature.SignerCertificate) {
+            $isMatch = ($signature.SignerCertificate.Subject -match $ConnectWiseSignerSubjectPattern)
+        }
+    }
+    catch {
+        $isMatch = $false
+    }
+
+    $ConnectWiseSignatureCache[$cacheKey] = $isMatch
+    return $isMatch
 }
 
 function Test-IsAutomatePackageName {
@@ -642,7 +709,8 @@ function Invoke-InstallerAction {
         [System.Collections.Generic.HashSet[string]]$RemovedPaths,
         [string]$ResultType = 'Installer',
         [AllowNull()][object]$AutomateRootInstallers = $null,
-        [AllowNull()][object]$NewestVersionByScRoot = $null
+        [AllowNull()][object]$NewestVersionByScRoot = $null,
+        [switch]$SkipYearCutoff
     )
 
     $activeIds = Ensure-StringArray -InputObject $ActiveInstanceIds
@@ -667,7 +735,7 @@ function Invoke-InstallerAction {
     }
 
     $fileYear = $File.LastWriteTime.Year
-    if ($fileYear -gt $MaxInstallerYear) {
+    if (-not $SkipYearCutoff -and $fileYear -gt $MaxInstallerYear) {
         Write-Result -Type $ResultType -Status 'SKIPPED (year > cutoff)' -Path $path -Detail ("LastWriteTime year {0}, cutoff {1}" -f $fileYear, $MaxInstallerYear)
         $Stats.Value.SkippedInstallers++
         return
@@ -679,8 +747,15 @@ function Invoke-InstallerAction {
         return
     }
 
+    $detail = if ($SkipYearCutoff) {
+        'ConnectWise-signed installer'
+    }
+    else {
+        ("LastWriteTime {0:yyyy-MM-dd}" -f $File.LastWriteTime)
+    }
+
     if (-not $Delete) {
-        Write-Result -Type $ResultType -Status 'WOULD REMOVE' -Path $path -Detail ("LastWriteTime {0:yyyy-MM-dd}" -f $File.LastWriteTime)
+        Write-Result -Type $ResultType -Status 'WOULD REMOVE' -Path $path -Detail $detail
         $Stats.Value.WouldRemoveInstallers++
         return
     }
@@ -688,7 +763,7 @@ function Invoke-InstallerAction {
     try {
         Remove-Item -LiteralPath $path -Force -ErrorAction Stop
         [void]$RemovedPaths.Add($path.ToLowerInvariant())
-        Write-Result -Type $ResultType -Status 'REMOVED' -Path $path -Detail ("LastWriteTime {0:yyyy-MM-dd}" -f $File.LastWriteTime)
+        Write-Result -Type $ResultType -Status 'REMOVED' -Path $path -Detail $detail
         $Stats.Value.RemovedInstallers++
         Remove-EmptyScreenConnectAncestors -StartPath $path
     }
@@ -711,6 +786,7 @@ Write-Output "Mode: $mode"
 Write-Output "Active instance ID(s): $(if ($activeInstanceIds -and $activeInstanceIds.Length -gt 0) { ($activeInstanceIds -join ', ') } else { '(none detected)' })"
 Write-Output "Scan roots: $(($scanRoots -join '; '))"
 Write-Output "Automate cache roots: $(if ($automateRoots.Length -gt 0) { ($automateRoots -join '; ') } else { '(none or skipped)' })"
+Write-Output "Branded installer scan: $(if ($SkipBrandedInstallerScan) { 'skipped' } else { 'Downloads and Desktop (ConnectWise signature)' })"
 Write-Output "Folder min age: $MinAgeHours hour(s)$(if ($Force) { ' (Force: age check disabled)' } else { '' })"
 Write-Output "Installer year cutoff: <= $MaxInstallerYear"
 Write-Output ''
@@ -765,6 +841,28 @@ foreach ($root in $scanRoots) {
 
             Invoke-InstallerAction -File $_ -ActiveInstanceIds $activeInstanceIds -Cutoff $folderCutoff -Stats ([ref]$stats) -RemovedPaths $removedPaths -NewestVersionByScRoot $newestVersionByScRoot
         }
+}
+
+if (-not $SkipBrandedInstallerScan) {
+    $brandedScanRoots = Ensure-StringArray (Get-BrandedInstallerScanRoots)
+    if ($brandedScanRoots.Length -gt 0) {
+        Write-Output ''
+        Write-Output '--- ConnectWise-signed installers (Downloads / Desktop) ---'
+
+        foreach ($root in $brandedScanRoots) {
+            Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue |
+                Where-Object { $_.Extension -in @('.exe', '.msi') } |
+                Where-Object { -not (Test-IsScreenConnectInstallerFile -File $_) } |
+                Where-Object { Test-IsConnectWiseSignedInstaller -File $_ } |
+                ForEach-Object {
+                    if (-not $seenInstallers.Add($_.FullName)) {
+                        return
+                    }
+
+                    Invoke-InstallerAction -File $_ -ActiveInstanceIds $activeInstanceIds -Cutoff $folderCutoff -Stats ([ref]$stats) -RemovedPaths $removedPaths -NewestVersionByScRoot $newestVersionByScRoot -ResultType 'Branded-Installer' -SkipYearCutoff
+                }
+        }
+    }
 }
 
 $seenVersionFolders = New-StringHashSet
